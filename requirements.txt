@@ -5,3 +5,6 @@ sqlalchemy>=2.0.0
 adtk>=0.6.0
 pyodbc>=4.0.0
 matplotlib>=3.7.0
+torch==2.7.0
+# Intel Arc / XPU: pip install intel-extension-for-pytorch (match torch version; see https://intel.github.io/intel-extension-for-pytorch/)
+chronos-forecasting>=2.0.0

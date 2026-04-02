@@ -13,6 +13,7 @@ from config import (
     TIME_RANGE_COLUMN,
     COUNTING_COLUMN,
     CATEGORY_COLUMN,
+    DIRECTION_COLUMN,
 )
 from src.data_process.feed_data import build_sqlserver_url, get_table_name, get_engine as sql_engine_from_url
 
@@ -94,4 +95,9 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         out["weekday"] = out[TIME_RANGE_COLUMN].dt.weekday
         out["hour"] = out[TIME_RANGE_COLUMN].dt.hour
         out["date"] = out[TIME_RANGE_COLUMN].dt.date
+    if DIRECTION_COLUMN not in out.columns:
+        out[DIRECTION_COLUMN] = "unknown"
+    else:
+        out[DIRECTION_COLUMN] = out[DIRECTION_COLUMN].fillna("unknown").astype(str)
+        out[DIRECTION_COLUMN] = out[DIRECTION_COLUMN].mask(out[DIRECTION_COLUMN] == "", "unknown")
     return out

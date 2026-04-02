@@ -14,24 +14,51 @@ from config import (
 )
 
 
-def train_detector(df: pd.DataFrame, feature_columns: list[str] | None = None, model_type: str | None = None):
+def train_detector(
+    df: pd.DataFrame,
+    feature_columns: list[str] | None = None,
+    model_type: str | None = None,
+    group_column: str | None = None,
+):
     """
     Train outlier detection model on counting data.
 
-    model_type: "seasonal" (ADTK SeasonalAD - traffic-specific, weekly/daily patterns),
-                "isolation_forest" (generic tabular outlier detection)
+    model_type: "seasonal" (ADTK), "isolation_forest", "lstm" (local .pt), "chronos" (HF Chronos-2).
+    group_column: for seasonal, one detector per distinct value (default: category).
     """
     model_type = model_type or MODEL_TYPE
     if model_type == "seasonal":
-        return _train_seasonal(df)
+        return _train_seasonal(df, group_column=group_column)
+    if model_type == "lstm":
+        from src.model.lstm_pretrained import train_lstm_placeholder
+
+        return train_lstm_placeholder(df)
+    if model_type == "chronos":
+        from src.model.chronos_hf import train_chronos_placeholder
+
+        return train_chronos_placeholder(df)
     return _train_isolation_forest(df, feature_columns or [COUNTING_COLUMN])
 
 
-def detect_anomalies(clf, df: pd.DataFrame, feature_columns: list[str] | None = None, model_type: str | None = None):
+def detect_anomalies(
+    clf,
+    df: pd.DataFrame,
+    feature_columns: list[str] | None = None,
+    model_type: str | None = None,
+    group_column: str | None = None,
+):
     """Run trained detector and return anomaly scores and labels."""
     model_type = model_type or MODEL_TYPE
     if model_type == "seasonal":
-        return _detect_seasonal(clf, df)
+        return _detect_seasonal(clf, df, group_column=group_column)
+    if model_type == "lstm":
+        from src.model.lstm_pretrained import detect_with_lstm
+
+        return detect_with_lstm(clf, df, group_column=group_column)
+    if model_type == "chronos":
+        from src.model.chronos_hf import detect_with_chronos
+
+        return detect_with_chronos(clf, df, group_column=group_column)
     return _detect_isolation_forest(clf, df, feature_columns or [COUNTING_COLUMN])
 
 
@@ -49,7 +76,7 @@ def _regularize_series(ts: pd.Series, freq: str) -> pd.Series:
     return out.fillna(0).astype(np.float64)
 
 
-def _train_seasonal(df: pd.DataFrame):
+def _train_seasonal(df: pd.DataFrame, group_column: str | None = None):
     """
     Train ADTK SeasonalAD - traffic-specific model that detects violations
     of weekly and daily patterns (validated on NYC taxi data).
@@ -57,29 +84,31 @@ def _train_seasonal(df: pd.DataFrame):
     from adtk.detector import SeasonalAD
     from adtk.data import validate_series
 
+    gc = group_column or CATEGORY_COLUMN
     freq = SERIES_RESAMPLE_FREQ
     detectors = {}
-    
-    for cat, group in df.groupby(CATEGORY_COLUMN):
+
+    for key, group in df.groupby(gc):
         ts = group.set_index(TIME_RANGE_COLUMN)[COUNTING_COLUMN]
         ts = _regularize_series(ts, freq)
         ts = validate_series(ts)
         detector = SeasonalAD(freq=SEASONAL_FREQ)
         detector.fit(ts)
-        detectors[cat] = detector
+        detectors[key] = detector
     return detectors
 
 
-def _detect_seasonal(detectors: dict, df: pd.DataFrame):
-    """Run SeasonalAD per category and merge results."""
+def _detect_seasonal(detectors: dict, df: pd.DataFrame, group_column: str | None = None):
+    """Run SeasonalAD per group key (category or direction) and merge results."""
     from adtk.data import validate_series
 
+    gc = group_column or CATEGORY_COLUMN
     freq = SERIES_RESAMPLE_FREQ
     scores = np.zeros(len(df))
     labels = np.zeros(len(df), dtype=np.int32)
 
-    for cat, detector in detectors.items():
-        mask = df[CATEGORY_COLUMN] == cat
+    for key, detector in detectors.items():
+        mask = df[gc] == key
         if not mask.any():
             continue
         group = df.loc[mask]

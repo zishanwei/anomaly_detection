@@ -23,6 +23,9 @@ from config import (
     TARGET_PASSWORD,
     TARGET_DRIVER,
     COUNTING_COLUMN,
+    CATEGORY_COLUMN,
+    DIRECTION_COLUMN,
+    ANOMALY_GROUP_BY,
     MODEL_TYPE,
     TIME_RANGE_COLUMN,
 )
@@ -47,6 +50,30 @@ REASON_COLORS = {
     REASON_WEATHER: "#2ca02c",
     REASON_UNKNOWN: "#9467bd",
 }
+
+
+def _categories_sorted(df: pd.DataFrame, category_col: str) -> list:
+    if category_col not in df.columns:
+        return []
+    return sorted(df[category_col].dropna().unique().tolist(), key=str)
+
+
+def anomaly_group_modes() -> list[tuple[str, str]]:
+    """(facet_column, short_label) for category-only, direction-only, or both."""
+    g = (ANOMALY_GROUP_BY or "category").lower().strip()
+    if g in ("origin", "direction"):
+        return [(DIRECTION_COLUMN, "direction")]
+    if g == "both":
+        return [(CATEGORY_COLUMN, "category"), (DIRECTION_COLUMN, "direction")]
+    return [(CATEGORY_COLUMN, "category")]
+
+
+def _style_time_axis(ax) -> None:
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    for tick in ax.get_xticklabels():
+        tick.set_rotation(45)
+        tick.set_ha("right")
 
 
 def _anomaly_points_with_reasons(
@@ -220,25 +247,55 @@ def plot_original_series(
     show: bool = True,
     time_col: str = TIME_RANGE_COLUMN,
     count_col: str = COUNTING_COLUMN,
+    category_col: str = CATEGORY_COLUMN,
+    facet_col: str | None = None,
+    group_by_label: str | None = None,
 ):
-    """Total count per time bucket (original data, no model)."""
+    """Count per time bucket per facet column (category or direction); otherwise one total series."""
     if df.empty:
         print("No data to plot")
         return
 
-    agg = df.groupby(time_col)[count_col].sum().reset_index().sort_values(time_col)
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(agg[time_col], agg[count_col], color="steelblue", linewidth=1.2)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    plt.xticks(rotation=45)
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Count (sum per bucket)")
-    ax.set_title("Original data — total count per time bucket")
-    ax.grid(True, alpha=0.3)
+    col = facet_col or category_col
+    label = group_by_label or ("direction" if col == DIRECTION_COLUMN else "category")
+    cats = _categories_sorted(df, col)
+    if not cats:
+        agg = df.groupby(time_col)[count_col].sum().reset_index().sort_values(time_col)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.plot(agg[time_col], agg[count_col], color="steelblue", linewidth=1.2)
+        _style_time_axis(ax)
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Count (sum per bucket)")
+        ax.set_title("Original data — total count per time bucket")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if output_path:
+            plt.savefig(output_path, dpi=150, bbox_inches="tight")
+            print(f"Saved: {output_path}")
+        if show:
+            plt.show()
+        else:
+            plt.close()
+        return
+
+    n = len(cats)
+    fig_h = max(4.0, 3.4 * n)
+    fig, axes = plt.subplots(n, 1, figsize=(12, fig_h), sharex=True)
+    if n == 1:
+        axes = np.array([axes])
+    for ax, cat in zip(axes, cats):
+        sub = df[df[col] == cat]
+        agg = sub.groupby(time_col)[count_col].sum().reset_index().sort_values(time_col)
+        ax.plot(agg[time_col], agg[count_col], color="steelblue", linewidth=1.2)
+        ax.set_ylabel("Count")
+        ax.set_title(str(cat))
+        ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Time")
+    _style_time_axis(axes[-1])
+    fig.suptitle(f"Original data — count per time bucket by {label}", y=1.002)
     plt.tight_layout()
     if output_path:
-        plt.savefig(output_path, dpi=150)
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Saved: {output_path}")
     if show:
         plt.show()
@@ -253,35 +310,77 @@ def plot_counts_with_anomalies(
     show: bool = True,
     time_col: str = TIME_RANGE_COLUMN,
     count_col: str = COUNTING_COLUMN,
+    category_col: str = CATEGORY_COLUMN,
+    facet_col: str | None = None,
+    group_by_label: str | None = None,
 ):
-    """Total count per bucket (line) + anomalous rows colored by reason (data_lack, weekday, …)."""
+    """Per facet (category or direction): count per bucket (line) + anomalies (scatter by reason)."""
     if df.empty:
         print("No data to plot")
         return
 
-    g = _aggregate_counts_and_anomaly_flags(df, labels, time_col, count_col)
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(
-        g[time_col],
-        g[count_col],
-        color="steelblue",
-        linewidth=1.0,
-        alpha=0.85,
-        label="Total per time bucket",
-    )
-    pts = _anomaly_points_with_reasons(df, labels, time_col, count_col)
-    _scatter_anomalies_by_reason(ax, pts, time_col, count_col)
-    ax.legend(loc="upper right", fontsize=8)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    plt.xticks(rotation=45)
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Count")
-    ax.set_title("Anomaly detection — points colored by reason (row-level flags)")
-    ax.grid(True, alpha=0.3)
+    col = facet_col or category_col
+    label = group_by_label or ("direction" if col == DIRECTION_COLUMN else "category")
+    cats = _categories_sorted(df, col)
+    if not cats:
+        g = _aggregate_counts_and_anomaly_flags(df, labels, time_col, count_col)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.plot(
+            g[time_col],
+            g[count_col],
+            color="steelblue",
+            linewidth=1.0,
+            alpha=0.85,
+            label="Total per time bucket",
+        )
+        pts = _anomaly_points_with_reasons(df, labels, time_col, count_col)
+        _scatter_anomalies_by_reason(ax, pts, time_col, count_col)
+        ax.legend(loc="upper right", fontsize=8)
+        _style_time_axis(ax)
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Count")
+        ax.set_title("Anomaly detection — points colored by reason (row-level flags)")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if output_path:
+            plt.savefig(output_path, dpi=150, bbox_inches="tight")
+            print(f"Saved: {output_path}")
+        if show:
+            plt.show()
+        else:
+            plt.close()
+        return
+
+    n = len(cats)
+    fig_h = max(4.0, 3.4 * n)
+    fig, axes = plt.subplots(n, 1, figsize=(12, fig_h), sharex=True)
+    if n == 1:
+        axes = np.array([axes])
+    for ax, cat in zip(axes, cats):
+        m = df[col] == cat
+        df_c = df.loc[m]
+        lab_c = labels[m.values]
+        g = _aggregate_counts_and_anomaly_flags(df_c, lab_c, time_col, count_col)
+        ax.plot(
+            g[time_col],
+            g[count_col],
+            color="steelblue",
+            linewidth=1.0,
+            alpha=0.85,
+            label="Sum per bucket",
+        )
+        pts = _anomaly_points_with_reasons(df_c, lab_c, time_col, count_col)
+        _scatter_anomalies_by_reason(ax, pts, time_col, count_col)
+        ax.legend(loc="upper right", fontsize=7)
+        ax.set_ylabel("Count")
+        ax.set_title(str(cat))
+        ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Time")
+    _style_time_axis(axes[-1])
+    fig.suptitle(f"Anomaly detection — by {label} (colors = reason)", y=1.002)
     plt.tight_layout()
     if output_path:
-        plt.savefig(output_path, dpi=150)
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Saved: {output_path}")
     if show:
         plt.show()
@@ -296,39 +395,91 @@ def plot_original_and_anomalies_combined(
     show: bool = True,
     time_col: str = TIME_RANGE_COLUMN,
     count_col: str = COUNTING_COLUMN,
+    category_col: str = CATEGORY_COLUMN,
+    facet_col: str | None = None,
+    group_by_label: str | None = None,
 ):
-    """Two stacked panels: original only, then series with anomaly markers."""
+    """Per facet (category or direction): left = original series, right = anomalies (by reason)."""
     if df.empty:
         print("No data to plot")
         return
 
-    g = _aggregate_counts_and_anomaly_flags(df, labels, time_col, count_col)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    ax1.plot(g[time_col], g[count_col], color="steelblue", linewidth=1.2)
-    ax1.set_ylabel("Count")
-    ax1.set_title("Original — total count per time bucket")
-    ax1.grid(True, alpha=0.3)
+    col = facet_col or category_col
+    label = group_by_label or ("direction" if col == DIRECTION_COLUMN else "category")
+    cats = _categories_sorted(df, col)
+    if not cats:
+        g = _aggregate_counts_and_anomaly_flags(df, labels, time_col, count_col)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        ax1.plot(g[time_col], g[count_col], color="steelblue", linewidth=1.2)
+        ax1.set_ylabel("Count")
+        ax1.set_title("Original — total count per time bucket")
+        ax1.grid(True, alpha=0.3)
 
-    ax2.plot(
-        g[time_col],
-        g[count_col],
-        color="steelblue",
-        linewidth=1.0,
-        alpha=0.85,
-        label="Total per time bucket",
-    )
-    pts = _anomaly_points_with_reasons(df, labels, time_col, count_col)
-    _scatter_anomalies_by_reason(ax2, pts, time_col, count_col, size=40)
-    ax2.set_xlabel("Time")
-    ax2.set_ylabel("Count")
-    ax2.set_title("With anomaly detection — colors by reason (data_lack, weekday, …)")
-    ax2.legend(loc="upper right", fontsize=8)
-    ax2.grid(True, alpha=0.3)
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
-    plt.xticks(rotation=45)
+        ax2.plot(
+            g[time_col],
+            g[count_col],
+            color="steelblue",
+            linewidth=1.0,
+            alpha=0.85,
+            label="Total per time bucket",
+        )
+        pts = _anomaly_points_with_reasons(df, labels, time_col, count_col)
+        _scatter_anomalies_by_reason(ax2, pts, time_col, count_col, size=40)
+        ax2.set_xlabel("Time")
+        ax2.set_ylabel("Count")
+        ax2.set_title("With anomaly detection — colors by reason (data_lack, weekday, …)")
+        ax2.legend(loc="upper right", fontsize=8)
+        ax2.grid(True, alpha=0.3)
+        _style_time_axis(ax2)
+        plt.tight_layout()
+        if output_path:
+            plt.savefig(output_path, dpi=150, bbox_inches="tight")
+            print(f"Saved: {output_path}")
+        if show:
+            plt.show()
+        else:
+            plt.close()
+        return
+
+    n = len(cats)
+    row_h = 3.5
+    fig, axes = plt.subplots(n, 2, figsize=(14, max(5.0, row_h * n)), sharex="col")
+    if n == 1:
+        axes = np.array([axes])
+    for i, cat in enumerate(cats):
+        ax0, ax1 = axes[i]
+        m = df[col] == cat
+        df_c = df.loc[m]
+        lab_c = labels[m.values]
+        g = _aggregate_counts_and_anomaly_flags(df_c, lab_c, time_col, count_col)
+        ax0.plot(g[time_col], g[count_col], color="steelblue", linewidth=1.2)
+        ax0.set_ylabel("Count")
+        ax0.set_title(f"Original — {cat}")
+        ax0.grid(True, alpha=0.3)
+
+        ax1.plot(
+            g[time_col],
+            g[count_col],
+            color="steelblue",
+            linewidth=1.0,
+            alpha=0.85,
+            label="Sum per bucket",
+        )
+        pts = _anomaly_points_with_reasons(df_c, lab_c, time_col, count_col)
+        _scatter_anomalies_by_reason(ax1, pts, time_col, count_col, size=40)
+        ax1.set_ylabel("Count")
+        ax1.set_title(f"Anomalies — {cat}")
+        ax1.legend(loc="upper right", fontsize=7)
+        ax1.grid(True, alpha=0.3)
+
+    axes[-1, 0].set_xlabel("Time")
+    axes[-1, 1].set_xlabel("Time")
+    _style_time_axis(axes[-1, 0])
+    _style_time_axis(axes[-1, 1])
+    fig.suptitle(f"By {label}: original (left) vs anomaly markers (right)", y=1.002)
     plt.tight_layout()
     if output_path:
-        plt.savefig(output_path, dpi=150)
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Saved: {output_path}")
     if show:
         plt.show()
@@ -366,34 +517,54 @@ def run_pipeline_and_visualize_anomalies(
     df_feat = prepare_features(df)
     mt = model_type or MODEL_TYPE
     feature_cols = [COUNTING_COLUMN]
-    clf = train_detector(df_feat, feature_cols, model_type=mt)
-    _scores, labels = detect_anomalies(clf, df_feat, feature_cols, model_type=mt)
-    n_anom = int((labels == 1).sum())
-    print(f"Flagged {n_anom} anomalous rows (model-level); plotting bucket-level view...")
+    modes = anomaly_group_modes()
+    multi = len(modes) > 1
+    clf = None
+    for col, glabel in modes:
+        if mt == "seasonal":
+            clf = train_detector(df_feat, feature_cols, model_type=mt, group_column=col)
+        else:
+            if clf is None:
+                clf = train_detector(df_feat, feature_cols, model_type=mt)
+        scores, labels = detect_anomalies(
+            clf, df_feat, feature_cols, model_type=mt, group_column=col,
+        )
+        n_anom = int((labels == 1).sum())
+        print(
+            f"Group by {glabel} ({col}): flagged {n_anom} anomalous rows; "
+            "plotting bucket-level view..."
+        )
 
-    out = Path(output_dir) if output_dir else None
-    if out:
-        out.mkdir(parents=True, exist_ok=True)
+        out = Path(output_dir) if output_dir else None
+        if out:
+            out.mkdir(parents=True, exist_ok=True)
+        sfx = f"_by_{glabel}" if multi else ""
 
-    plot_original_series(
-        df_feat,
-        output_path=str(out / "original_counts.png") if out else None,
-        show=show,
-    )
+        plot_original_series(
+            df_feat,
+            output_path=str(out / f"original_counts{sfx}.png") if out else None,
+            show=show,
+            facet_col=col,
+            group_by_label=glabel,
+        )
 
-    plot_counts_with_anomalies(
-        df_feat,
-        labels,
-        output_path=str(out / "counts_with_anomalies.png") if out else None,
-        show=show,
-    )
+        plot_counts_with_anomalies(
+            df_feat,
+            labels,
+            output_path=str(out / f"counts_with_anomalies{sfx}.png") if out else None,
+            show=show,
+            facet_col=col,
+            group_by_label=glabel,
+        )
 
-    plot_original_and_anomalies_combined(
-        df_feat,
-        labels,
-        output_path=str(out / "original_vs_anomalies.png") if out else None,
-        show=show,
-    )
+        plot_original_and_anomalies_combined(
+            df_feat,
+            labels,
+            output_path=str(out / f"original_vs_anomalies{sfx}.png") if out else None,
+            show=show,
+            facet_col=col,
+            group_by_label=glabel,
+        )
 
 
 def plot_top_directions(df: pd.DataFrame, top_n: int = 10, output_path: str | None = None, show: bool = True):
@@ -474,7 +645,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Run anomaly pipeline (same as main.py) and plot original vs detected anomalies",
     )
-    parser.add_argument("--model-type", choices=["seasonal", "isolation_forest"], help="Override MODEL_TYPE")
+    parser.add_argument(
+        "--model-type",
+        choices=["seasonal", "isolation_forest", "lstm", "chronos"],
+        help="Override MODEL_TYPE (lstm: checkpoint; chronos: pip install chronos-forecasting)",
+    )
     args = parser.parse_args()
 
     if args.anomalies:

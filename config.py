@@ -57,10 +57,24 @@ SOURCE_DATABASES = [
 TIME_RANGE_COLUMN = "start_time"
 COUNTING_COLUMN = "count"
 CATEGORY_COLUMN = "category"
+DIRECTION_COLUMN = "direction"
+ANOMALY_GROUP_BY = "category"
+# Model: "seasonal" (ADTK), "isolation_forest", "lstm" (local .pt), "chronos" (HF Chronos-2)
+MODEL_TYPE = "chronos"
+TORCH_DEVICE = "xpu"
 
-# Model
-MODEL_TYPE = "seasonal"
-# Resample series to this pandas offset before ADTK (must match feed_data interval, e.g. 15min)
+# Seasonal (ADTK)
 SERIES_RESAMPLE_FREQ = "15min"
-# SeasonalAD period in number of steps: 96 = one day at 15-min resolution (24 * 4)
-SEASONAL_FREQ = 96
+SEASONAL_FREQ = 96  # one day in 15-min steps (24 * 4)
+
+# Pre-trained LSTM (local checkpoint; scripts/create_dummy_lstm_checkpoint.py)
+LSTM_PRETRAINED_PATH = "models/lstm_traffic.pt"
+LSTM_SEQ_LEN = 96
+LSTM_HIDDEN_SIZE = 64
+LSTM_NUM_LAYERS = 2
+LSTM_ANOMALY_QUANTILE = 0.99
+
+# Hugging Face Chronos (pretrained forecasting; anomaly = forecast error). pip install chronos-forecasting
+CHRONOS_MODEL_ID = "amazon/chronos-2"
+CHRONOS_CONTEXT_LENGTH = 256
+CHRONOS_ANOMALY_QUANTILE = 0.99

@@ -61,7 +61,7 @@ DIRECTION_COLUMN = "direction"
 ANOMALY_GROUP_BY = "category"
 # Model: "seasonal" (ADTK), "isolation_forest", "lstm" (local .pt), "chronos" (HF Chronos-2)
 MODEL_TYPE = "chronos"
-TORCH_DEVICE = "xpu"
+TORCH_DEVICE = "auto"
 
 # Seasonal (ADTK)
 SERIES_RESAMPLE_FREQ = "15min"
